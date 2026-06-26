@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Real-Time HR Interview Analyzer</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f8f9fa; color: #333; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        label { font-weight: bold; display: block; margin-bottom: 8px; color: #495057; }
+        input[type="text"], textarea { padding: 12px; font-size: 16px; width: 100%; box-sizing: border-box; border: 1px solid #ced4da; border-radius: 6px; margin-bottom: 20px; font-family: inherit; }
+        textarea { height: 100px; resize: vertical; }
+        button { padding: 12px 24px; font-size: 16px; font-weight: bold; cursor: pointer; border: none; border-radius: 6px; transition: all 0.2s; margin-right: 10px; margin-bottom: 10px; }
+        .btn-start { background: #28a745; color: white; }
+        .btn-stop { background: #dc3545; color: white; display: none; }
+        .btn-report { display: none; } /* Dynamic colors applied via JS */
+        .btn-listen { background: #007bff; color: white; width: 100%; font-size: 18px; margin-top: 10px; }
+        button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .status-bar { font-weight: bold; padding: 15px; border-radius: 6px; background: #e9ecef; margin-top: 15px; text-align: left; font-size: 16px; }
+        .status-dot { color: #28a745; display: inline-block; margin-right: 5px; }
+        
+        .result-box { border-left: 5px solid #007bff; background: #f1f7ff; padding: 15px; margin-top: 20px; border-radius: 0 8px 8px 0; }
+        .trait-tag { display: inline-block; background: #e2e3e5; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 14px; margin-bottom: 10px; }
+        .q-box { background: #fff3cd; border-left: 5px solid #ffc107; padding: 15px; margin-top: 15px; border-radius: 0 8px 8px 0; font-weight: 500; }
+        
+        .report-card { border: 3px solid #ffc107; background: #fffdf5; }
+        .report-card h3 { color: #d39e00; border-bottom: 1px solid #ffeeba; padding-bottom: 5px; margin-top: 20px; }
+        .btn-download { background: #28a745; color: white; display: none; width: 100%; font-size: 18px; margin-top: 15px; }
+        blockquote { background: #f1f7ff; border-left: 5px solid #007bff; padding: 15px; font-style: italic; margin: 10px 0; }
+    
+    </style>
+</head>
+<body>
+    
+    <div class="card">
+        <label for="roleInput">Target Job Role / Position:</label>
+        <input type="text" id="roleInput" value="Operator">
+
+        <label for="jdInput">Job Description (JD requirements):</label>
+        <textarea id="jdInput" placeholder="Paste the job specifications or key duties here..."></textarea>
+        
+        <button id="startBtn" class="btn-start">Open Session</button>
+        <button id="stopBtn" class="btn-stop">Close Session (End Interview)</button>
+        <button id="reportBtn" class="btn-report" disabled>📄 Generate Final Report</button>
+        
+        <div id="status" class="status-bar">Status: ⚪ Disconnected</div>
+    </div>
+
+    <div class="card" id="controlCard" style="display: none;">
+        <label>Candidate Speech Control:</label>
+        <button id="talkBtn" class="btn-listen">🔴 Click to Listen (Candidate Speaking)</button>
+    </div>
+
+    <div id="reportContainer"></div>
+
+    <h3>Latest On-The-Spot Analysis</h3>
+    <div id="analysisFeed"></div>
+
+    <script>
+        let ws;
+        let mediaRecorder;
+        let stream;
+        let audioChunks = [];
+        let isListeningCandidate = false;
+        let finalReportHtmlStorage = "";
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const talkBtn = document.getElementById('talkBtn');
+        const reportBtn = document.getElementById('reportBtn');
+        const controlCard = document.getElementById('controlCard');
+        const statusText = document.getElementById('status');
+        const feed = document.getElementById('analysisFeed');
+        const reportContainer = document.getElementById('reportContainer');
+
+        startBtn.onclick = async () => {
+            const targetRole = document.getElementById('roleInput').value;
+            const jobDescription = document.getElementById('jdInput').value || "No specific JD provided.";
+            
+            const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${wsProtocol}//${window.location.host}/ws/interview?role=${encodeURIComponent(targetRole)}&jd=${encodeURIComponent(jobDescription)}`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = async () => {
+                statusText.innerHTML = '<span class="status-dot">🟢</span> Session Active. Memory bank recording.';
+                
+                // Hide Start, Show Stop
+                startBtn.style.display = "none";
+                stopBtn.style.display = "inline-block";
+                stopBtn.disabled = false;
+                
+                // Show Report button but GREY IT OUT initially
+                reportBtn.style.display = "inline-block";
+                reportBtn.disabled = true;
+                reportBtn.style.background = "#e2e3e5";
+                reportBtn.style.color = "#a6a6a6";
+                reportBtn.style.cursor = "not-allowed";
+
+                controlCard.style.display = "block";
+                feed.innerHTML = ""; 
+                reportContainer.innerHTML = "";
+                
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            };
+
+            ws.onmessage = (event) => {
+                const text = event.data;
+
+                // Handle the final report returning from the backend
+                if (text.startsWith("FINAL_REPORT:")) {
+                    statusText.innerHTML = '<span class="status-dot">🟢</span> Final report generated successfully. Connection closed.';
+                    reportBtn.style.display = "none"; // Hides the generate button
+                    
+                    const reportHtml = text.replace("FINAL_REPORT:", "");
+                    finalReportHtmlStorage = reportHtml; // Saves it for downloading
+                    
+                    reportContainer.innerHTML = `
+                        <div class="card report-card">
+                            <h2 style="margin-top: 0; color: #333;">📊 Final Candidate Suitability Report</h2>
+                            ${reportHtml}
+                            <button id="downloadBtn" class="btn-download" style="display: block;">💾 Download This Report</button>
+                        </div>
+                    `;
+                    
+                    document.getElementById('downloadBtn').onclick = () => downloadReportAsHTML();
+
+                    if (ws) ws.close();
+                    return;
+                }
+                
+                // Standard live transcript block
+                statusText.innerHTML = '<span class="status-dot">🟢</span> Session Active. Analysis updated.';
+                let transcript = text.match(/Transcript:([\s\S]*?)(?=Trait Detected:|$)/)?.[1]?.trim() || "Captured.";
+                let trait = text.match(/Trait Detected:([\s\S]*?)(?=Analysis:|$)/)?.[1]?.trim() || "None";
+                let analysis = text.match(/Analysis:([\s\S]*?)(?=Follow-Up Question:|$)/)?.[1]?.trim() || "None";
+                let question = text.match(/Follow-Up Question:([\s\S]*?)$/)?.[1]?.trim() || "None";
+
+                feed.innerHTML = `
+                    <div class="card">
+                        <p><strong>Candidate said:</strong> "${transcript}"</p>
+                        <div class="result-box">
+                            <span class="trait-tag">BE Trait: ${trait}</span>
+                            <p>${analysis}</p>
+                        </div>
+                        <div class="q-box">
+                            💡 <strong>Suggested Follow-Up Question:</strong><br>${question}
+                        </div>
+                    </div>
+                ` + feed.innerHTML;
+            };
+        };
+
+        talkBtn.onclick = () => {
+            if (!isListeningCandidate) {
+                isListeningCandidate = true;
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    if (ws && ws.readyState === WebSocket.OPEN && audioBlob.size > 0) {
+                        ws.send(audioBlob);
+                        statusText.innerHTML = '⏳ Transcribing and logging to memory bank...';
+                    }
+                };
+
+                mediaRecorder.start();
+                talkBtn.innerHTML = "⏹️ Click to STOP (Done Speaking)";
+                talkBtn.style.background = "#dc3545";
+            } else {
+                isListeningCandidate = false;
+                mediaRecorder.stop();
+                talkBtn.innerHTML = "🔴 Click to Listen (Candidate Speaking)";
+                talkBtn.style.background = "#007bff";
+            }
+        };
+
+        // When you click "Close Session"
+        stopBtn.onclick = () => {
+            // Stop the microphone so the interview is over
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            
+            // Hide the controls
+            controlCard.style.display = "none";
+            stopBtn.style.display = "none";
+            
+            // WAKE UP the Generate Report Button!
+            reportBtn.disabled = false;
+            reportBtn.style.background = "#ffc107"; // Yellow
+            reportBtn.style.color = "#333";
+            reportBtn.style.cursor = "pointer";
+            
+            statusText.innerHTML = "Status: 🔴 Interview Ended. Ready to generate report.";
+            
+            // Notice: We intentionally do NOT run ws.close() here, so the brain stays active for the report.
+        };
+
+        // When you click the newly active Generate Report button
+        reportBtn.onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send("GENERATE_REPORT");
+                statusText.innerHTML = '⏳ Compiling comprehensive JD alignment report...';
+                reportBtn.disabled = true;
+                reportBtn.innerHTML = "⏳ Generating...";
+                reportBtn.style.background = "#e2e3e5";
+                reportBtn.style.color = "#a6a6a6";
+            }
+        };
+
+        // Custom function to package the HTML and force a file download
+        function downloadReportAsHTML() {
+            const role = document.getElementById('roleInput').value;
+            const fullHtmlContent = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="utf-8">
+                    <title>Interview Report - ${role}</title>
+                    <style>
+                        body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 40px auto; color: #333; line-height: 1.6; }
+                        h2 { color: #333; border-bottom: 2px solid #ffc107; padding-bottom: 10px; }
+                        h3 { color: #d39e00; margin-top: 25px; }
+                        blockquote { background: #f1f7ff; border-left: 5px solid #007bff; padding: 15px; font-style: italic; margin: 15px 0; }
+                    </style>
+                </head>
+                <body>
+                    <h2>📊 Candidate Suitability Report: ${role}</h2>
+                    <p><strong>Generated on:</strong> ${new Date().toLocaleString()}</p>
+                    <hr>
+                    ${finalReportHtmlStorage}
+                </body>
+                </html>
+            `;
+
+            const blob = new Blob([fullHtmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Interview_Report_${role.replace(/\s+/g, '_')}.html`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
